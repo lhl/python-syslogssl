@@ -123,7 +123,7 @@ class SSLSysLogHandler(logging.handlers.SysLogHandler):
 
 
   def emit(self, record):
-    msg = self.format(record) + '\000'
+    msg = self.format(record) + '\n'
     prio = '<%d>' % self.encodePriority(self.facility,
                                         self.mapPriority(record.levelname))
     if type(msg) is unicode:
