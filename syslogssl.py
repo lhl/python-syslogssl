@@ -1,6 +1,7 @@
 #!/usr/bin/env python
 
 
+import codecs
 import logging
 import logging.handlers
 import ssl
