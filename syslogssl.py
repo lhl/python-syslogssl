@@ -8,6 +8,20 @@ import ssl
 import socket
 
 
+class NewLineFraming:
+
+  def frame( self, message ):
+    return message + '\n'
+
+
+class OctectCountingFraming:
+
+  def frame( self, message ):
+    length = len( message )
+    frame = str( length ) + " " + message
+    return frame
+
+
 class SSLSysLogHandler(logging.handlers.SysLogHandler):
 
   # We need to paste all this in because __init__ bitches otherwise
@@ -97,6 +111,8 @@ class SSLSysLogHandler(logging.handlers.SysLogHandler):
       "CRITICAL" : "critical"
   }
 
+  framing_strategy = NewLineFraming()
+
 
   def __init__(self, address, certs=None,
                facility=LOG_USER):
@@ -123,7 +139,7 @@ class SSLSysLogHandler(logging.handlers.SysLogHandler):
 
 
   def emit(self, record):
-    msg = self.format(record) + '\n'
+    msg = self.format(record)
     prio = '<%d>' % self.encodePriority(self.facility,
                                         self.mapPriority(record.levelname))
     if type(msg) is unicode:
@@ -131,8 +147,9 @@ class SSLSysLogHandler(logging.handlers.SysLogHandler):
       if codecs:
         msg = codecs.BOM_UTF8 + msg
     msg = prio + msg
+    framed_message = self.framing_strategy.frame(msg)
     try:
-      self.socket.write(msg)
+      self.socket.write( framed_message )
     except(KeyboardInterrupt, SystemExit):
       raise
     except:
@@ -142,8 +159,9 @@ class SSLSysLogHandler(logging.handlers.SysLogHandler):
 ### Example Usage ###
 
 if __name__ == '__main__':
-  host = 'logs.papertrailapp.com'
-  port = 514 # default, you'll want to change this
+  import os
+  host = os.getenv( 'SYSLOG_HOST', 'logs.papertrailapp.com' )
+  port = int( os.getenv( 'SYSLOG_PORT', '514' ) ) # default, you'll want to change this
   address = (host, port)
 
   # We don't want this to hang
