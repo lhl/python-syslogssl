@@ -2,10 +2,13 @@
 
 
 import codecs
+from datetime import datetime
 import logging
 import logging.handlers
+import pytz
 import ssl
 import socket
+import tzlocal
 
 
 class NewLineFraming:
@@ -113,6 +116,12 @@ class SSLSysLogHandler(logging.handlers.SysLogHandler):
 
   framing_strategy = NewLineFraming()
 
+  # Host name to attach to the records
+  hostname = socket.gethostname()
+
+  # Overrides the process name from the record
+  process_name = None
+
 
   def __init__(self, address, certs=None,
                facility=LOG_USER):
@@ -138,6 +147,21 @@ class SSLSysLogHandler(logging.handlers.SysLogHandler):
     logging.Handler.close(self)
 
 
+  def format_header(self, record, priority, message ):
+    created_at_local_notz = datetime.fromtimestamp( record.created )
+    local_tz = tzlocal.get_localzone()
+    created_at_local = local_tz.localize( created_at_local_notz )
+    created_at_utc = created_at_local.astimezone( pytz.utc )
+    when = created_at_utc.isoformat()[ 0:-6 ] + "Z"
+
+    if self.process_name is None:
+      name = record.processName
+    else:
+      name = self.process_name
+
+    return priority + "1 " + when + " " + self.hostname + " " + name + " " + str( record.process ) + " - - " + message
+
+
   def emit(self, record):
     msg = self.format(record)
     prio = '<%d>' % self.encodePriority(self.facility,
@@ -146,8 +170,9 @@ class SSLSysLogHandler(logging.handlers.SysLogHandler):
       msg = msg.encode('utf-8')
       if codecs:
         msg = codecs.BOM_UTF8 + msg
-    msg = prio + msg
-    framed_message = self.framing_strategy.frame(msg)
+
+    full_message = self.format_header( record, prio, msg )
+    framed_message = self.framing_strategy.frame( full_message )
     try:
       self.socket.write( framed_message )
     except(KeyboardInterrupt, SystemExit):
@@ -170,6 +195,8 @@ if __name__ == '__main__':
   logger = logging.getLogger()
   logger.setLevel(logging.INFO)
   syslog =  SSLSysLogHandler(address=address, certs='syslog.papertrail.crt')
+  syslog.framing_strategy = OctetCountingFraming()
   logger.addHandler(syslog)
 
   logger.info('testing SSLSysLogHandler')
+
