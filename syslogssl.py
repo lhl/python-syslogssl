@@ -14,7 +14,7 @@ class NewLineFraming:
     return message + '\n'
 
 
-class OctectCountingFraming:
+class OctetCountingFraming:
 
   def frame( self, message ):
     length = len( message )
