@@ -122,25 +122,48 @@ class SSLSysLogHandler(logging.handlers.SysLogHandler):
   # Overrides the process name from the record
   process_name = None
 
+  # Allow retrying
+  allows_retries = False
+
 
   def __init__(self, address, certs=None,
                facility=LOG_USER):
     logging.Handler.__init__(self)
 
     self.address = address
+    self.certs = certs
     self.facility = facility
 
     self.unixsocket = 0
-    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 
-    if certs:
-      self.socket = ssl.wrap_socket(s,
-                                    ca_certs=certs,
-                                    cert_reqs=ssl.CERT_REQUIRED)
-    else:
-      self.socket = ssl.wrap_socket(s, cert_reqs=ssl.CERT_NONE)
-    self.socket.connect(address)
+  def _connect(self):
+      s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 
+      if self.certs:
+          self.socket = ssl.wrap_socket(s,
+                                        ca_certs=self.certs,
+                                        cert_reqs=ssl.CERT_REQUIRED)
+      else:
+          self.socket = ssl.wrap_socket(s, cert_reqs=ssl.CERT_NONE)
+      self.socket.connect(address)
+
+  def _retry(self, record):
+      if self.is_retrying and self.allows_retries:
+          return True
+
+      self.is_retrying = True
+      if self.socket is not None:
+          try:
+            self.socket.close()
+          except:
+              pass # Sometimes sockets are already closed
+          finally:
+              self.socket = None
+
+      self._connect()
+      self.emit(self, record)
+      self.is_retrying = False
+      return False
 
   def close(self):
     self.socket.close()
@@ -163,6 +186,9 @@ class SSLSysLogHandler(logging.handlers.SysLogHandler):
 
 
   def emit(self, record):
+    if self.socket is not None:
+        self._connect()
+
     msg = self.format(record)
     prio = '<%d>' % self.encodePriority(self.facility,
                                         self.mapPriority(record.levelname))
@@ -177,6 +203,9 @@ class SSLSysLogHandler(logging.handlers.SysLogHandler):
       self.socket.write( framed_message )
     except(KeyboardInterrupt, SystemExit):
       raise
+    except ssl.SSLError as problem:
+      if self._rety():
+          raise
     except:
       self.handleError(record)
 
