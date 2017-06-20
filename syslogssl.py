@@ -171,7 +171,7 @@ class SSLSysLogHandler(logging.handlers.SysLogHandler):
                                         cert_reqs=ssl.CERT_REQUIRED)
       else:
           self.socket = ssl.wrap_socket(s, cert_reqs=ssl.CERT_NONE)
-      self.socket.connect(address)
+      self.socket.connect( self.address )
 
   def _retry(self, record):
       if self.is_retrying and self.allows_retries:
