@@ -2,10 +2,51 @@
 
 
 import codecs
+from datetime import datetime
 import logging
 import logging.handlers
+import pytz
 import ssl
 import socket
+import tzlocal
+
+
+class NewLineFraming:
+
+  def frame( self, message ):
+    return message + '\n'
+
+
+class OctetCountingFraming:
+
+  def frame( self, message ):
+    length = len( message )
+    frame = str( length ) + " " + message
+    return frame
+
+
+class RFC5424Header:
+
+    def format_header(self, syslog, record, priority, message):
+        created_at_local_notz = datetime.fromtimestamp(record.created)
+        local_tz = tzlocal.get_localzone()
+        created_at_local = local_tz.localize(created_at_local_notz)
+        created_at_utc = created_at_local.astimezone(pytz.utc)
+        when = created_at_utc.isoformat()[0:-6] + "Z"
+
+        if syslog.process_name is None:
+            name = record.processName
+        else:
+            name = syslog.process_name
+
+        return priority + "1 " + when + " " + syslog.hostname + " " + name + " " + str(
+            record.process) + " - - " + message
+
+
+class TraditionalHeader:
+
+    def format_header(self, syslog, record, priority, message):
+        return priority + message
 
 
 class SSLSysLogHandler(logging.handlers.SysLogHandler):
@@ -97,25 +138,58 @@ class SSLSysLogHandler(logging.handlers.SysLogHandler):
       "CRITICAL" : "critical"
   }
 
+  framing_strategy = NewLineFraming()
+  header_format = TraditionalHeader()
+
+  # Host name to attach to the records
+  hostname = socket.gethostname()
+
+  # Overrides the process name from the record
+  process_name = None
+
+  # Allow retrying
+  allows_retries = False
+
 
   def __init__(self, address, certs=None,
                facility=LOG_USER):
     logging.Handler.__init__(self)
 
     self.address = address
+    self.certs = certs
     self.facility = facility
 
     self.unixsocket = 0
-    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    self.socket = None
 
-    if certs:
-      self.socket = ssl.wrap_socket(s,
-                                    ca_certs=certs,
-                                    cert_reqs=ssl.CERT_REQUIRED)
-    else:
-      self.socket = ssl.wrap_socket(s, cert_reqs=ssl.CERT_NONE)
-    self.socket.connect(address)
+  def _connect(self):
+      s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 
+      if self.certs:
+          self.socket = ssl.wrap_socket(s,
+                                        ca_certs=self.certs,
+                                        cert_reqs=ssl.CERT_REQUIRED)
+      else:
+          self.socket = ssl.wrap_socket(s, cert_reqs=ssl.CERT_NONE)
+      self.socket.connect( self.address )
+
+  def _retry(self, record):
+      if self.is_retrying and self.allows_retries:
+          return True
+
+      self.is_retrying = True
+      if self.socket is not None:
+          try:
+            self.socket.close()
+          except:
+              pass # Sometimes sockets are already closed
+          finally:
+              self.socket = None
+
+      self._connect()
+      self.emit(self, record)
+      self.is_retrying = False
+      return False
 
   def close(self):
     self.socket.close()
@@ -123,18 +197,26 @@ class SSLSysLogHandler(logging.handlers.SysLogHandler):
 
 
   def emit(self, record):
-    msg = self.format(record) + '\n'
+    if self.socket is None:
+        self._connect()
+
+    msg = self.format(record)
     prio = '<%d>' % self.encodePriority(self.facility,
                                         self.mapPriority(record.levelname))
     if type(msg) is unicode:
       msg = msg.encode('utf-8')
       if codecs:
         msg = codecs.BOM_UTF8 + msg
-    msg = prio + msg
+
+    full_message = self.header_format.format_header( self, record, prio, msg )
+    framed_message = self.framing_strategy.frame( full_message )
     try:
-      self.socket.write(msg)
+      self.socket.write( framed_message )
     except(KeyboardInterrupt, SystemExit):
       raise
+    except ssl.SSLError as problem:
+      if self._rety():
+          raise
     except:
       self.handleError(record)
 
@@ -142,16 +224,29 @@ class SSLSysLogHandler(logging.handlers.SysLogHandler):
 ### Example Usage ###
 
 if __name__ == '__main__':
-  host = 'logs.papertrailapp.com'
-  port = 514 # default, you'll want to change this
+  def test_handler( handler, message ):
+      logger.addHandler( handler )
+      logger.info( message )
+      logger.removeHandler( handler )
+
+  import os
+  host = os.getenv( 'SYSLOG_HOST', 'logs.papertrailapp.com' )
+  port = int( os.getenv( 'SYSLOG_PORT', '514' ) ) # default, you'll want to change this
   address = (host, port)
 
   # We don't want this to hang
-  socket.setdefaulttimeout(5.0)
+  socket.setdefaulttimeout(.5)
 
   logger = logging.getLogger()
   logger.setLevel(logging.INFO)
-  syslog =  SSLSysLogHandler(address=address, certs='syslog.papertrail.crt')
-  logger.addHandler(syslog)
 
-  logger.info('testing SSLSysLogHandler')
+  # Test original format
+  original_wire =  SSLSysLogHandler(address=address, certs='syslog.papertrail.crt')
+  test_handler( original_wire, "Default usage" )
+
+  # Test RFC5424 wire format
+  rfc5424 = SSLSysLogHandler( address=address, certs='syslog.papertrail.crt' )
+  rfc5424.framing_strategy = OctetCountingFraming()
+  rfc5424.header_format = RFC5424Header()
+  test_handler( rfc5424, "RFC5424 frame" )
+
