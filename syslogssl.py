@@ -6,6 +6,7 @@ import logging
 import logging.handlers
 import ssl
 import socket
+import sys
 
 
 class SSLSysLogHandler(logging.handlers.SysLogHandler):
@@ -126,6 +127,11 @@ class SSLSysLogHandler(logging.handlers.SysLogHandler):
     msg = self.format(record) + '\n'
     prio = '<%d>' % self.encodePriority(self.facility,
                                         self.mapPriority(record.levelname))
+
+    if sys.version_info[0] >= 3:
+      unicode = str
+      prio = prio.encode('utf-8')
+
     if type(msg) is unicode:
       msg = msg.encode('utf-8')
       if codecs:
@@ -151,7 +157,8 @@ if __name__ == '__main__':
 
   logger = logging.getLogger()
   logger.setLevel(logging.INFO)
-  syslog =  SSLSysLogHandler(address=address, certs='syslog.papertrail.crt')
+  #updated to the root certificates of papertrail https://papertrailapp.com/tools/papertrail-bundle.pem
+  syslog =  SSLSysLogHandler(address=address, certs='papertrail-bundle.pem')
   logger.addHandler(syslog)
 
   logger.info('testing SSLSysLogHandler')
